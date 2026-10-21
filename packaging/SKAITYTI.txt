@@ -1,0 +1,56 @@
+BACKUP STUDIO – WINDOWS x64
+
+PALEIDIMAS
+1. Pasirinkite ZIP → „Išskleisti viską“ / „Extract all“.
+2. Išskleistame BackUpStudio aplanke atidarykite BackUpStudio.exe.
+3. Pasirinkite šaltinio ir atsarginės kopijos aplankus programos lange.
+
+Python, pip ar kitų komponentų diegti nereikia. Internetas paleidimui nereikalingas.
+Paketas skirtas Windows 10 / 11, x64 (Intel / AMD 64 bitų).
+Administratorius nereikalingas, tačiau turite turėti prieigą prie darbo aplankų.
+
+Laikykite BackUpStudio.exe ir _internal aplanką kartu. Galima perkelti visą
+BackUpStudio aplanką arba sukurti EXE nuorodą darbalaukyje. Vien EXE perkėlimas
+be _internal neveiks. Failų tiesiai iš ZIP nepaleiskite.
+
+Demonstracija.bat atidaro programą su laikinais pavyzdiniais failais.
+Naudojimo_instrukcija.md aprašo palyginimą, kopijavimą, atkūrimą ir išimtis.
+
+NUSTATYMAI
+Nustatymai ir žurnalai saugomi %LOCALAPPDATA%\BackUpStudio.
+Ankstesnės Python GUI versijos nustatymai tame pačiame kompiuteryje išlieka.
+Kopijuojami failai ir jų versijos saugomi programoje pasirinktuose aplankuose.
+Norint pašalinti programą, pakanka pašalinti jos išskleistą aplanką.
+Tai neištrina nustatymų, jūsų failų ar sukurtų atsarginių kopijų.
+
+JEI NEATSIDARO
+Patikrinkite, ar išskleistas visas ZIP ir šalia EXE yra _internal.
+Jei žurnalas sukurtas, klaida bus %LOCALAPPDATA%\BackUpStudio\startup.log.
+Jei ši vieta nepasiekiama, žurnalas gali būti %TEMP%\BackUpStudio-startup-<PID>.log.
+EXE nėra pasirašytas leidėjo sertifikatu; Windows ar organizacijos politika
+gali pateikti įspėjimą arba riboti paleidimą. Apsaugos nustatymų keisti nereikia.
+
+PATIKRA
+Paketas sukompiliuotas ir statiškai patikrintas Linux aplinkoje.
+Tikras EXE paleidimas Windows kompiuteryje dar nepatikrintas.
+Programos versija: 2.6.0 (rodoma sąsajos apačioje).
+Praėjo 90 testų Linux aplinkoje, įskaitant kontrolinių sumų indeksą.
+19 GUI testų praleista: testavimo aplinkoje nėra grafinio ekrano.
+Naudojamas ankstesnis patikrintas EXE paleidiklis; jo failo Properties versija
+gali būti 2.2.0, nors įkeliamas naujas 2.6.0 programos kodas.
+LT/EN kalbą ir šviesią / tamsią aplinką galite pasirinkti programos Nustatymuose.
+Pasirinktinė diagnostika Windows terminale, šiame aplanke:
+  .\BackUpStudio.exe --self-test
+Ji naudoja tik laikinus testų failus. Rezultatai – startup.log.
+
+KOMPONENTAI
+Pridėtas oficialus CPython 3.14.7 ir atitinkamas Tcl/Tk 9.0.4 rinkinys.
+Šaltiniai ir kontrolinės sumos: Komponentai.json ir SHA256SUMS.txt.
+Python bei įtrauktų bibliotekų licencijos: _internal\LICENSE.txt.
+Tcl ir Tk licencijos:
+  _internal\tcl\tcl_library\license.terms
+  _internal\tcl\tk_library\license.terms
+
+Techninis pakavimo pagrindas:
+https://docs.python.org/3.14/using/windows.html#the-embeddable-package
+https://docs.python.org/3.14/library/sys_path_init.html#pth-files

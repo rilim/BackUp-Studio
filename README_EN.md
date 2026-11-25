@@ -1,8 +1,35 @@
-# BackUp Studio 2.6.0
+# BackUp Studio 2.7.0
 
 A local Windows app for comparing folders, backing up selected files, restoring them and cleaning up the backup.
 
-## Changes in 2.6.0
+## Changes in 2.7.0
+
+Backup cleanup now removes empty OneDrive folders. OneDrive marks a synced folder
+read-only about 20 seconds after syncing it, and Windows refuses to remove such a
+folder ("Access is denied"). After revalidating the folder, only that attribute is
+cleared and removal is retried; if it still fails, the attribute is restored.
+Only empty folders are removed and ACLs are never changed.
+
+Old version cleanup: Activity history → Manage versions…. Settings define how many
+recent runs are always kept and the age (days) and size (GB) limits. The most
+recent runs are never deleted; older runs are deleted when they exceed the age or
+size limit, or all of them when neither limit is set. Only whole runs created by
+the program are deleted; the newest, unfinished, changed or link-containing runs stay.
+
+The cleanup window shows each run's folder, start and finish time and its files,
+with horizontal scrolling; Open folder opens it. For backup-cleanup archives it
+checks by content whether each file still exists in the source or backup and shows
+"Only in archive" or the identical file's location. Deletion requires confirmation
+and is recorded in the activity history. With "Offer cleanup after each operation"
+the same review appears when limits are exceeded; versions are never deleted on their own.
+
+Window, row, sidebar, column and dialog sizes follow the Windows display scale
+(125 %, 150 % ...) without exceeding the screen. Compact mode uses slimmer buttons
+and margins, so the file list keeps at least five rows. Activity history buttons
+always stay visible. Statistic cards also count folders; the active card filter is
+highlighted, and clicking it again or "✕ Show all differences" restores the full list.
+
+## Earlier 2.6.0 changes
 
 Scan differences now reuses separate SHA-256 hashes for source and backup files
 whose identity, size and timestamps are unchanged. Cached files are still opened
@@ -12,7 +39,7 @@ cache; use it periodically to catch content changes that preserve metadata.
 The first scan also reads every file. After an interrupted scan, the same button
 offers Scan again. File-row checkboxes and icons have a 12-pixel internal inset.
 
-## Earlier 2.5.0 changes
+## Previous changes in 2.5.0
 
 Backup, Restore and Backup cleanup share the same list layout. Restore options
 and the cleanup explanation are inside the folder panel; compact statistics
@@ -101,7 +128,7 @@ stage and path; exported logs include system error codes. Failed archiving expla
 why a parent folder was kept.
 
 Extract the complete new ZIP into a separate folder. The app should display
-**2.6.0**. Settings and existing backups are preserved. This code-only update reuses
+**2.7.0**. Settings and existing backups are preserved. This code-only update reuses
 the verified 2.2.0 launcher; its Windows file properties may retain that version.
 
 ## Start without installing Python
@@ -126,7 +153,7 @@ Disabled buttons use a neutral background, readable text, a subtle border and th
 
 Empty-folder deletion retries follow **Settings → Retry count**, including the first attempt. The default is 3 attempts, with 1- and 2-second pauses. Every attempt rechecks both roots, the target folder's identity and its absence from the source. New or unselected contents are preserved, and **Stop** interrupts the retry wait. Persistent access errors are reported; ACLs are never automatically changed. Read-only file handling is described above.
 
-The version archive is placed next to the backup by default (for example, `Copy.versions`). You can change its location under **Settings**. Existing files can also be archived before overwriting. The program does not automatically delete old versions.
+The version archive is placed next to the backup by default (for example, `Copy.versions`). You can change its location under **Settings**. Existing files can also be archived before overwriting. The program never deletes old versions on its own; review and remove old runs under **Activity history → Manage versions…** (limits: **Settings → Old version retention**).
 
 ## Notes
 
@@ -142,12 +169,12 @@ Quick scans reuse SHA-256 hashes where file metadata is unchanged; full scans
 read contents on both sides. Selected files and new copies remain checked during
 operations. Partial scan failures protect affected paths; root failures block
 all actions. Backups stored on the same physical disk do not protect against disk
-failure. The Windows EXE was built on Linux and has not been run on a Windows PC
-in this environment.
+failure. The Windows EXE package was built on Linux; version 2.7.0 was used and
+tested on a Windows 11 PC with OneDrive folders and 125 % display scaling.
 
-The test suite covers file operations, paths, GUI logic and hash cache behavior.
-Native Windows GUI execution still needs verification there.
-New GUI cases cover equal list height across modes/themes/languages and icon/
-mouse behavior in both tables. These visual integration checks were not run here.
+The test suite covers file operations, paths, GUI logic, hash cache behavior,
+old version cleanup, read-only OneDrive folders and display scaling. On Windows 11
+(Python 3.15) 144 of 147 tests pass; 3 are skipped (two need privileges to create
+symbolic links, one emulates a non-Windows system).
 
 For complete details, see `Naudojimo_instrukcija.md` (Lithuanian). Source users can run `python main.py` with Python 3.10+ and Tkinter; the Windows EXE package includes its own runtime.

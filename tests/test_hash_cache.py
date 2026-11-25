@@ -92,7 +92,8 @@ class HashCacheTests(unittest.TestCase):
         self.scan()
         original = Path.open
         def open_file(path, *args, **kwargs):
-            if path == blocked:
+            # The engine opens Windows paths in extended-length form; compare equivalent paths.
+            if file_ops.io_path(path) == file_ops.io_path(blocked):
                 raise PermissionError('AV blocked')
             return original(path, *args, **kwargs)
         with patch.object(Path, 'open', open_file):

@@ -31,13 +31,13 @@ EXE nėra pasirašytas leidėjo sertifikatu; Windows ar organizacijos politika
 gali pateikti įspėjimą arba riboti paleidimą. Apsaugos nustatymų keisti nereikia.
 
 PATIKRA
-Paketas sukompiliuotas ir statiškai patikrintas Linux aplinkoje.
-Tikras EXE paleidimas Windows kompiuteryje dar nepatikrintas.
-Programos versija: 2.6.0 (rodoma sąsajos apačioje).
-Praėjo 90 testų Linux aplinkoje, įskaitant kontrolinių sumų indeksą.
-19 GUI testų praleista: testavimo aplinkoje nėra grafinio ekrano.
+Paketas sukompiliuotas Linux aplinkoje.
+2.7.0 versija naudota ir patikrinta Windows 11 kompiuteryje su OneDrive aplankais.
+Programos versija: 2.7.0 (rodoma sąsajos apačioje).
+Windows aplinkoje iš 147 testų praėjo 144 (Python 3.15); 3 praleisti, nes simbolinėms
+nuorodoms kurti reikia administratoriaus teisių arba testas skirtas kitai sistemai.
 Naudojamas ankstesnis patikrintas EXE paleidiklis; jo failo Properties versija
-gali būti 2.2.0, nors įkeliamas naujas 2.6.0 programos kodas.
+gali būti 2.2.0, nors įkeliamas naujas 2.7.0 programos kodas.
 LT/EN kalbą ir šviesią / tamsią aplinką galite pasirinkti programos Nustatymuose.
 Pasirinktinė diagnostika Windows terminale, šiame aplanke:
   .\BackUpStudio.exe --self-test

@@ -27,7 +27,7 @@ def create_demo(directory: Path) -> Settings:
         "Užrašai/Naujesnis_kopijoje.txt": ("Sena versija", "Nauja versija kopijoje"),
         "Archyvas/Senas_projektas.txt": (None, "Ankstesni projekto failai\n" * 100),
         "Archyvas/Laikinas_eksportas.csv": (None, "Duomenys;2025\n" * 70),
-        "Investavimas/Privatu.txt": ("Šis aplankas neįtrauktas", "Neįtrauktas ir kopijoje"),
+        "Asmeniniai/Privatu.txt": ("Šis aplankas neįtrauktas", "Neįtrauktas ir kopijoje"),
     }
     now = time.time()
     for index, (relative, (left, right)) in enumerate(samples.items()):
@@ -41,7 +41,7 @@ def create_demo(directory: Path) -> Settings:
     newer = destination / "Užrašai/Naujesnis_kopijoje.txt"
     os.utime(newer, (now, now))
     (source / "Tuščias_aplankas").mkdir(exist_ok=True)
-    return Settings(source=str(source), destination=str(destination), exclusions=["Investavimas", "Islaidos/Islaidos UK"])
+    return Settings(source=str(source), destination=str(destination), exclusions=["Asmeniniai"])
 
 
 def run():

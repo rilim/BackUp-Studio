@@ -94,7 +94,7 @@ def build(args):
             extract_zip(archive, runtime / "tcl")
         for extra in ("dde1.4", "registry1.3"):
             shutil.copytree(tcltk / "tcl" / extra, runtime / "tcl" / extra)
-        for filename in ("main.py", "ui.py", "config.py", "utils.py", "file_ops.py", "i18n.py", "path_utils.py", "file_icons.py"):
+        for filename in ("main.py", "ui.py", "config.py", "utils.py", "file_ops.py", "i18n.py", "path_utils.py", "file_icons.py", "retention.py"):
             shutil.copy2(SOURCE / filename, app / filename)
         shutil.copytree(SOURCE / "tests", app / "tests", ignore=shutil.ignore_patterns("__pycache__"))
         shutil.copy2(HERE / "portable_bootstrap.py", app)

@@ -15,7 +15,9 @@ from path_utils import display_path, display_text, display_data
 from file_icons import FileIcons
 from file_ops import (BackupError, Cancelled, action_label, compare, eligible, execute,
                       recommended, versions_root, SYSTEM_EXCLUSIONS)
-from utils import (MODE_LABELS, STATUS_LABELS, export_csv, format_date, format_size as _format_size,
+from retention import (CONTENT_LABELS, archive_root, find_unique_files, list_archive_runs, plan_for_settings,
+                       prune, rules_enabled)
+from utils import (HISTORY_LABELS, MODE_LABELS, STATUS_LABELS, export_csv, format_date, format_size as _format_size,
                    normalize_exclusion, open_folder)
 
 BG = "#F3F6F8"
@@ -43,6 +45,32 @@ DISABLED_BG = "#E7ECEF"
 DISABLED_FG = "#586870"
 DISABLED_BORDER = "#BCC8CE"
 _language = "lt"
+# Screen scale: 1.0 at 100 % Windows scaling (96 DPI), 1.25 at 125 %, 1.5 at 150 % ...
+# Fonts are given in points and scale by themselves; pixel sizes go through S().
+SCALE = 1.0
+
+
+def detect_scale(root):
+    try:
+        return max(1.0, min(3.0, float(root.winfo_fpixels("1i")) / 96.0))
+    except (tk.TclError, ValueError):
+        return 1.0
+
+
+def S(value):
+    """A design size in pixels (at 100 %) converted for the current screen scale."""
+    return int(round(value * SCALE))
+
+
+def fit_window(window, width, height, min_width, min_height):
+    """Size a window by design pixels, scaled, but never larger than the screen."""
+    screen_w, screen_h = window.winfo_screenwidth(), window.winfo_screenheight()
+    min_w, min_h = min(S(min_width), screen_w - S(40)), min(S(min_height), screen_h - S(90))
+    w = max(min_w, min(S(width), screen_w - S(60)))
+    h = max(min_h, min(S(height), screen_h - S(90)))
+    window.geometry(f"{w}x{h}")
+    window.minsize(min_w, min_h)
+    return w, h
 
 
 def T(value):
@@ -208,8 +236,7 @@ class ExclusionsDialog(tk.Toplevel):
         super().__init__(app.root)
         self.app = app
         self.title(T("Nekopijuojami aplankai"))
-        self.geometry("820x640")
-        self.minsize(720, 570)
+        fit_window(self, 820, 640, 720, 570)
         self.configure(bg=BG)
         self.transient(app.root)
         self.grab_set()
@@ -321,6 +348,451 @@ class ExclusionsDialog(tk.Toplevel):
         self.destroy()
 
 
+class PruneDialog(tk.Toplevel):
+    """Review and delete old version-archive runs. Nothing is removed without a click."""
+    MAX_LISTED_FILES = 2000
+
+    def __init__(self, app, root_path, prompt=False):
+        super().__init__(app.root)
+        self.app = app
+        self.archive = root_path
+        self.settings = app.current_settings()
+        self.prompt = prompt
+        self.plan = []
+        self.items = {}
+        self.warnings = []
+        self.unique = None  # run id -> [(relative, size)] once checked; None while unknown
+        self.found = {}  # (run id, relative) -> where an identical copy was found
+        self.checking = False
+        self.selected_run = None
+        self.auto_selected = None  # Row chosen by the dialog itself; a user's own choice is never overridden.
+        self.result_text = ""  # Outcome of the last deletion, kept visible while the list refreshes.
+        self.events = queue.Queue()
+        self.cancel_event = threading.Event()
+        self.worker = None
+        self.close_requested = False
+        self.withdraw()
+        self.title(T("Senų versijų valymas"))
+        fit_window(self, 1240, 980, 860, 600)
+        self.configure(bg=BG)
+        self.transient(app.root)
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(2, weight=1)
+        self.rowconfigure(3, weight=1)
+        header = tk.Frame(self, bg=BG)
+        header.grid(row=0, column=0, sticky="ew", padx=26, pady=(20, 8))
+        self.heading = label(header, "Versijų archyvas viršija nustatytas ribas" if prompt else "Senų versijų valymas",
+                             size=19, bold=True)
+        self.heading.pack(anchor="w")
+        label(header, T("Archyvas: ") + display_path(root_path), color=MUTED, anchor="w",
+              justify="left", wraplength=1100).pack(anchor="w", pady=(6, 0))
+        label(header, self.rules_text(), color=MUTED, anchor="w").pack(anchor="w", pady=(2, 0))
+        note = label(self, "Trinamos tik visos operacijos, kurias sukūrė ši programa. Naujausia ir nebaigtos operacijos "
+                     "niekada netrinamos. Kiti archyvo aplankai neliečiami. Pažymėkite operaciją, kad pamatytumėte jos turinį.",
+                     color=TEAL, bg=TEAL_LIGHT, anchor="w", justify="left", padx=15, pady=9, wraplength=1100)
+        note.grid(row=1, column=0, sticky="ew", padx=26, pady=(0, 8))
+
+        panel = card(self)
+        panel.grid(row=2, column=0, sticky="nsew", padx=26)
+        panel.rowconfigure(0, weight=1)
+        panel.columnconfigure(0, weight=1)
+        columns = (("date", "PRADĖTA", S(140)), ("mode", "VEIKSMAS", S(160)), ("folder", "APLANKAS", S(230)),
+                   ("files", "FAILŲ", S(70)), ("size", "DYDIS", S(90)), ("plan", "PLANAS", S(380)))
+        self.tree = ttk.Treeview(panel, columns=[key for key, _, _ in columns], show="headings", selectmode="browse")
+        for key, title, width in columns:
+            self.tree.heading(key, text=T(title), anchor="w")
+            self.tree.column(key, width=width, anchor="e" if key in ("files", "size") else "w",
+                             stretch=key == "plan")
+        self.tree.tag_configure("delete", foreground=RED)
+        self.tree.tag_configure("protected", foreground=MUTED)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(panel, orient="vertical", command=self.tree.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        self.tree.bind("<<TreeviewSelect>>", lambda event: self.show_selected())
+
+        details = card(self)
+        details.grid(row=3, column=0, sticky="nsew", padx=26, pady=(8, 0))
+        details.rowconfigure(2, weight=1)
+        details.columnconfigure(0, weight=1)
+        title_row = tk.Frame(details, bg=WHITE)
+        title_row.grid(row=0, column=0, columnspan=2, sticky="ew", padx=14, pady=(10, 0))
+        self.detail_title = label(title_row, "OPERACIJOS TURINYS", size=9, color=MUTED, bold=True, anchor="w")
+        self.detail_title.pack(side="left")
+        self.open_button = button(title_row, "Atverti aplanką", self.open_selected)
+        self.open_button.configure(pady=4, padx=8, font=(FONT, 9), state="disabled")
+        self.open_button.pack(side="right")
+        self.detail_info = label(details, "Pažymėkite operaciją viršutinėje lentelėje.", size=9, color=MUTED,
+                                 anchor="w", justify="left", wraplength=1100)
+        self.detail_info.grid(row=1, column=0, columnspan=2, sticky="ew", padx=14, pady=(4, 6))
+        self.files = ttk.Treeview(details, columns=("path", "size", "where"), show="headings", selectmode="browse")
+        for key, title, width in (("path", "FAILAS", S(520)), ("size", "DYDIS", S(90)), ("where", "KUR DAR YRA?", S(420))):
+            self.files.heading(key, text=T(title), anchor="w")
+            # Fixed widths (widened to the longest path) + a horizontal scrollbar: long paths are never cut off.
+            self.files.column(key, width=width, minwidth=S(60), anchor="e" if key == "size" else "w", stretch=False)
+        self.files.tag_configure("unique", foreground=RED)
+        self.files.tag_configure("elsewhere", foreground=MUTED)
+        self.files.grid(row=2, column=0, sticky="nsew", padx=(14, 0))
+        file_scroll = ttk.Scrollbar(details, orient="vertical", command=self.files.yview)
+        file_scroll.grid(row=2, column=1, sticky="ns", padx=(0, 14))
+        file_xscroll = ttk.Scrollbar(details, orient="horizontal", command=self.files.xview)
+        file_xscroll.grid(row=3, column=0, sticky="ew", padx=(14, 0))
+        self.files.configure(yscrollcommand=file_scroll.set, xscrollcommand=file_xscroll.set)
+        self.files.bind("<<TreeviewSelect>>", lambda event: self.show_file_detail())
+        self.file_rows = {}
+        self.file_detail = label(details, "Pažymėkite failą, kad pamatytumėte visą jo kelią.", size=9, color=MUTED,
+                                 anchor="w", justify="left", wraplength=S(1100))
+        self.file_detail.grid(row=4, column=0, columnspan=2, sticky="ew", padx=14, pady=(6, 10))
+
+        self.summary = label(self, "Skaičiuojamas archyvo dydis…", bold=True, anchor="w")
+        self.summary.grid(row=4, column=0, sticky="ew", padx=26, pady=(10, 0))
+        self.warning = label(self, "", color=AMBER, anchor="w", justify="left", wraplength=1100)
+        self.warning.grid(row=5, column=0, sticky="ew", padx=26, pady=(4, 0))
+        footer = tk.Frame(self, bg=BG)
+        footer.grid(row=6, column=0, sticky="ew", padx=26, pady=(10, 20))
+        self.status = label(footer, "", size=9, color=MUTED, anchor="w")
+        self.status.pack(side="left", fill="x", expand=True)
+        self.delete_button = button(footer, "Ištrinti", self.confirm_delete, primary=True, danger=True)
+        self.delete_button.configure(state="disabled")
+        self.delete_button.pack(side="right")
+        self.close_button = button(footer, "Ne dabar" if prompt else "Uždaryti", self.request_close)
+        self.close_button.pack(side="right", padx=8)
+        self.protocol("WM_DELETE_WINDOW", self.request_close)
+        self.bind("<Escape>", lambda event: self.request_close())
+        if not prompt:
+            self.reveal()
+        self.start_listing()
+        self.poll_id = self.after(100, self.poll)
+
+    def rules_text(self):
+        parts = []
+        if self.settings.keep_runs:
+            parts.append(T("visada paliekamos paskutinės ") + str(self.settings.keep_runs))
+        if self.settings.keep_days:
+            parts.append(T("ne senesnės nei ") + f"{self.settings.keep_days} " + T("d."))
+        if self.settings.max_versions_gb:
+            parts.append(T("iki ") + f"{self.settings.max_versions_gb} GB")
+        if not parts:
+            return T("Taisyklės nenustatytos – nieko nesiūloma trinti. Nustatykite jas skiltyje „Nustatymai“.")
+        return T("Taisyklės: ") + " · ".join(parts)
+
+    def reveal(self):
+        self.prompt = False
+        self.deiconify()
+        self.lift()
+        try:
+            self.grab_set()
+        except tk.TclError:
+            pass
+        self.focus_set()
+
+    def set_status(self, text=""):
+        self.status.configure(text="  ·  ".join(part for part in (self.result_text, text) if part))
+
+    def doomed(self):
+        return [item for item in self.plan if item.action == "delete"]
+
+    def start_listing(self):
+        self.delete_button.configure(state="disabled")
+        self.summary.configure(text=T("Skaičiuojamas archyvo dydis…"), fg=INK)
+        self.unique = None
+        self.cancel_event = threading.Event()
+        cancel = self.cancel_event
+        settings = self.settings
+
+        def job():
+            try:
+                runs, warnings = list_archive_runs(self.archive, cancel)
+                plan = plan_for_settings(settings, runs)
+                self.events.put(("plan", (plan, warnings)))
+                cleanup_runs = [item.run for item in plan if item.action == "delete" and item.run.mode == "cleanup"]
+                if cleanup_runs:
+                    roots = [value for value in (settings.source, settings.destination) if value.strip()]
+                    try:
+                        found = {}
+                        result = find_unique_files(cleanup_runs, roots, cancel,
+                                                   lambda done, total: self.events.put(("progress", (done, total))), found)
+                        self.events.put(("unique", (result, found)))
+                    except Cancelled:
+                        raise
+                    except Exception as error:
+                        self.events.put(("unique_failed", str(error)))
+            except Cancelled:
+                self.events.put(("cancelled", None))
+            except Exception as error:
+                self.events.put(("error", str(error)))
+        self.worker = threading.Thread(target=job, name="archive-inspection", daemon=True)
+        self.worker.start()
+
+    def busy(self):
+        return self.worker is not None and self.worker.is_alive()
+
+    def poll(self):
+        progress = None
+        while True:
+            try:
+                kind, value = self.events.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "plan":
+                if not self.show_plan(*value):
+                    return
+            elif kind == "progress":
+                progress = value
+            elif kind == "unique":
+                self.show_unique(*value)
+            elif kind == "unique_failed":
+                self.checking = False
+                self.unique = None
+                self.set_status(T("Nepavyko patikrinti, ar failai yra kitur: ") + T(value))
+                self.update_warning()
+                self.update_delete_button()
+            elif kind == "pruned":
+                self.show_result(value)
+            elif kind == "error":
+                if self.prompt:
+                    self.destroy_dialog()
+                    return
+                self.summary.configure(text=T("Archyvo patikrinti nepavyko."), fg=RED)
+                self.set_status(T(value))
+            elif kind == "cancelled":
+                self.set_status(T("Veiksmas sustabdytas."))
+        if progress and self.checking:
+            self.set_status(T("Tikrinama, ar valymo archyvų failai yra kitur… ") + f"{progress[0]}/{progress[1]}")
+        if self.close_requested and not self.busy():
+            self.destroy_dialog()
+            return
+        self.poll_id = self.after(100, self.poll)
+
+    def plan_text(self, item):
+        if item.action == "keep":
+            return T("Liks")
+        if item.action == "protected":
+            return T("Saugoma") + " – " + T(item.reason)
+        text = T("Bus ištrinta") + " – " + T(item.reason)
+        unique = (self.unique or {}).get(item.run.id)
+        if unique:
+            text += T(f"  ·  tik archyve: {len(unique)}")
+        return text
+
+    def show_plan(self, plan, warnings):
+        """Returns False when the (hidden) prompt closed itself because nothing needs cleaning."""
+        self.plan = plan
+        doomed = self.doomed()
+        if self.prompt:
+            if not doomed:
+                self.destroy_dialog()
+                return False
+            self.reveal()
+        self.checking = any(item.run.mode == "cleanup" for item in doomed)
+        self.tree.delete(*self.tree.get_children())
+        self.items = {}
+        first_doomed = None
+        for item in plan:
+            run = item.run
+            row = self.tree.insert("", "end", tags=(item.action,), values=(
+                run.started.strftime("%Y-%m-%d %H:%M"), T(HISTORY_LABELS.get(run.mode, run.mode)), run.id,
+                run.files, format_size(run.size), self.plan_text(item)))
+            self.items[row] = item
+            if item.action == "delete" and first_doomed is None:
+                first_doomed = row
+        total = sum(item.run.size for item in plan)
+        freed = sum(item.run.size for item in doomed)
+        files = sum(item.run.files for item in doomed)
+        if not plan:
+            self.summary.configure(text=T("Versijų archyve operacijų nėra."), fg=INK)
+        elif doomed:
+            self.summary.configure(fg=RED, text=T(f"Bus ištrinta operacijų: {len(doomed)} · failų: {files} · ")
+                                   + format_size(freed) + T("  (archyve iš viso: ") + format_size(total) + ")")
+        else:
+            self.summary.configure(fg=TEAL, text=T(f"Archyvas atitinka taisykles. Operacijų: {len(plan)} · ")
+                                   + format_size(total))
+        self.warnings = warnings
+        self.set_status(T("Tikrinama, ar valymo archyvų failai yra kitur…") if self.checking else
+                        T(f"Nepažįstami elementai palikti: {len(warnings)}") if warnings else "")
+        self.update_warning()
+        self.update_delete_button()
+        target = first_doomed or (self.tree.get_children()[0] if self.tree.get_children() else None)
+        if target:
+            self.select_row(target)
+        return True
+
+    def select_row(self, row):
+        self.auto_selected = row
+        self.tree.selection_set(row)
+        self.tree.see(row)
+        self.show_selected()
+
+    def show_unique(self, result, found=None):
+        self.unique = result
+        self.found = found or {}
+        self.checking = False
+        self.set_status(T(f"Nepažįstami elementai palikti: {len(self.warnings)}") if self.warnings else "")
+        for row, item in self.items.items():
+            self.tree.set(row, "plan", self.plan_text(item))
+        self.update_warning()
+        self.update_delete_button()
+        riskiest = max(self.items, key=lambda row: len(result.get(self.items[row].run.id, [])), default=None)
+        selection = self.tree.selection()
+        if (riskiest and result.get(self.items[riskiest].run.id)
+                and (not selection or selection[0] == self.auto_selected)):
+            self.select_row(riskiest)  # Show the run whose deletion would lose the most files.
+        else:
+            self.show_selected()
+
+    def update_warning(self):
+        cleanup_runs = [item.run for item in self.doomed() if item.run.mode == "cleanup"]
+        if not cleanup_runs:
+            self.warning.configure(text="")
+        elif self.checking:
+            self.warning.configure(fg=AMBER, text=T(f"⚠ Kopijos valymo archyvų tarp trinamų: {len(cleanup_runs)}. ")
+                                   + T("Tikrinama, ar jų failai dar yra šaltinyje arba kopijoje…"))
+        elif self.unique is None:
+            self.warning.configure(fg=AMBER, text=T(f"⚠ Kopijos valymo archyvų tarp trinamų: {len(cleanup_runs)}. ")
+                                   + T("Šie failai jau pašalinti iš šaltinio ir kopijos – archyvas yra paskutinė jų kopija."))
+        else:
+            unique = [entry for run in cleanup_runs for entry in self.unique.get(run.id, [])]
+            if unique:
+                self.warning.configure(fg=RED, text=T(f"⚠ Failų, kurių daugiau niekur nėra: {len(unique)} (")
+                                       + format_size(sum(size for _, size in unique))
+                                       + T("). Ištrynus šias operacijas jie bus prarasti. Pažymėkite operaciją, kad pamatytumėte, kurie."))
+            else:
+                self.warning.configure(fg=TEAL, text=T("Visi trinamų valymo archyvų failai dar yra šaltinyje arba kopijoje."))
+
+    def update_delete_button(self):
+        doomed = self.doomed()
+        self.delete_button.configure(text=T(f"Ištrinti operacijų: {len(doomed)}"),
+                                     state="normal" if doomed and not self.checking else "disabled")
+
+    def show_selected(self):
+        selection = self.tree.selection()
+        item = self.items.get(selection[0]) if selection else None
+        if not item:
+            return
+        run = item.run
+        self.selected_run = run
+        self.open_button.configure(state="normal")
+        self.detail_title.configure(text=T("OPERACIJOS TURINYS: ") + run.id)
+        kinds = sorted({relative.split("/", 1)[0] for relative, _ in run.entries})
+        when = run.started.strftime("%Y-%m-%d %H:%M:%S")
+        if run.finished:
+            when += "–" + run.finished.strftime("%H:%M:%S" if run.finished.date() == run.started.date() else "%Y-%m-%d %H:%M:%S")
+        lines = [display_path(run.path), T("Operacija vykdyta: ") + when + "  ·  "
+                 + " · ".join(T(CONTENT_LABELS.get(kind, kind)) for kind in kinds)]
+        unique_entries = (self.unique or {}).get(run.id)
+        checked = unique_entries is not None
+        unique_set = {relative for relative, _ in unique_entries} if checked else set()
+        if checked:
+            lines.append(T(f"Tik archyve: {len(unique_entries)} failų (") + format_size(sum(s for _, s in unique_entries))
+                         + T(f") · yra ir kitur: {len(run.entries) - len(unique_entries)}"))
+        elif run.mode == "cleanup" and item.action == "delete" and self.checking:
+            lines.append(T("Tikrinama, ar failai yra kitur…"))
+        if run.problem:
+            lines.append(T(run.problem))
+        self.detail_info.configure(text="\n".join(line for line in lines if line))
+        self.files.delete(*self.files.get_children())
+        self.file_rows = {}
+        self.file_detail.configure(text=T("Pažymėkite failą, kad pamatytumėte visą jo kelią."))
+        entries = sorted(run.entries, key=lambda entry: (entry[0] not in unique_set, entry[0].casefold()))
+        measure = tkfont.Font(family=FONT, size=10).measure
+        widest = {"path": S(520), "where": S(420)}
+        for relative, size in entries[:self.MAX_LISTED_FILES]:
+            shown = relative.split("/", 1)[1] if "/" in relative else relative
+            if checked:
+                if relative in unique_set:
+                    tag, where = "unique", T("Tik archyve")
+                else:
+                    tag, where = "elsewhere", self.found.get((run.id, relative), T("Yra kitur"))
+            else:
+                tag, where = "", ""
+            row = self.files.insert("", "end", tags=(tag,), values=(shown, format_size(size), where))
+            self.file_rows[row] = (relative, where)
+            widest["path"] = max(widest["path"], measure(shown) + S(24))
+            widest["where"] = max(widest["where"], measure(where) + S(24))
+        for key, width in widest.items():
+            self.files.column(key, width=min(width, S(4000)))
+        self.files.xview_moveto(0)
+        if len(entries) > self.MAX_LISTED_FILES:
+            self.files.insert("", "end", values=(T(f"… ir dar {len(entries) - self.MAX_LISTED_FILES} failų. Visą turinį matysite atvėrę aplanką."), "", ""))
+
+    def show_file_detail(self):
+        selection = self.files.selection()
+        info = self.file_rows.get(selection[0]) if selection else None
+        if not info or self.selected_run is None:
+            return
+        relative, where = info
+        lines = [T("Archyve: ") + display_path(self.selected_run.path.joinpath(*relative.split("/")))]
+        if where:
+            lines.append(T("Kur dar yra: ") + where)
+        self.file_detail.configure(text="\n".join(lines))
+
+    def open_selected(self):
+        if self.selected_run is not None:
+            self.app.open_path(display_path(self.selected_run.path))
+
+    def confirm_delete(self):
+        doomed = self.doomed()
+        if not doomed or self.busy():
+            return
+        if self.app.busy:
+            messagebox.showinfo(T("Vyksta operacija"), T("Palaukite, kol baigsis vykdoma operacija."), parent=self)
+            return
+        freed = format_size(sum(item.run.size for item in doomed))
+        message = T(f"Negrįžtamai ištrinti senų operacijų: {len(doomed)}?") + f"\n\n{freed}\n"
+        unique = [entry for item in doomed for entry in (self.unique or {}).get(item.run.id, [])]
+        if unique:
+            message += "\n" + T(f"Dėmesio: failų, kurių daugiau niekur nėra: {len(unique)}.") + "\n"
+        message += "\n" + T("Ištrintų versijų atkurti nebus galima.")
+        if not messagebox.askyesno(T("Patvirtinkite trynimą"), message, icon="warning", parent=self):
+            return
+        self.delete_button.configure(state="disabled")
+        self.close_button.configure(text=T("Stabdyti"))
+        self.set_status(T("Trinama…"))
+        self.cancel_event = threading.Event()
+        cancel, plan, settings = self.cancel_event, list(self.plan), self.settings
+
+        def job():
+            try:
+                report = prune(self.archive, plan, settings, cancel=cancel,
+                               log_directory=self.app.data_directory / "logs")
+                self.events.put(("pruned", report))
+            except Exception as error:
+                self.events.put(("error", str(error)))
+        self.worker = threading.Thread(target=job, name="archive-prune", daemon=False)
+        self.worker.start()
+
+    def show_result(self, report):
+        self.close_button.configure(text=T("Uždaryti"))
+        failures = [f"{item['path']}: {item['message']}" for item in report["items"] if item["status"] == "failed"]
+        self.result_text = T(f"Ištrinta: {report['completed']}  ·  Klaidų: {report['failed']}  ·  "
+                             f"Sustabdyta: {report['cancelled']}. Išsamiau – veiksmų istorijoje.")
+        self.set_status()
+        if failures:
+            self.app.show_errors(failures)
+        if report.get("log_error"):
+            messagebox.showwarning(T("Žurnalas"), T(report["log_error"]), parent=self)
+        if not self.close_requested:
+            self.start_listing()
+
+    def request_close(self):
+        if self.busy():
+            self.cancel_event.set()
+            self.close_requested = True
+            self.set_status(T("Stabdoma…"))
+            return
+        self.destroy_dialog()
+
+    def destroy_dialog(self):
+        try:
+            self.after_cancel(self.poll_id)
+        except (tk.TclError, AttributeError):
+            pass
+        self.cancel_event.set()
+        if getattr(self.app, "prune_window", None) is self:
+            self.app.prune_window = None
+        self.destroy()
+
+
 def checkbox_hit(tree, event):
     """Only the checkbox part of the gutter toggles; the type icon selects."""
     if tree.identify_region(event.x, event.y) != "tree" or tree.identify_column(event.x) != "#0":
@@ -411,8 +883,7 @@ class ExpandedList:
         self.app = app
         self.window = tk.Toplevel(app.root, bg=WHITE)
         self.window.title(f"{T('Failų sąrašas')} • {T(MODE_LABELS[app.mode])}")
-        self.window.geometry("1200x760")
-        self.window.minsize(850, 480)
+        fit_window(self.window, 1200, 760, 850, 480)
         self.window.protocol("WM_DELETE_WINDOW", app.close_expanded_list)
         toolbar = tk.Frame(self.window, bg=WHITE)
         toolbar.pack(fill="x", padx=14, pady=12)
@@ -519,8 +990,11 @@ class ExpandedList:
 
 class BackupApp:
     def __init__(self, root, settings: Settings, data_directory=None, demo=False, startup_warning=""):
+        global SCALE
         self.root = root
         self.settings = settings
+        SCALE = detect_scale(root)
+        self.row_height = S(38)
         set_appearance(settings.language, settings.theme)
         self.data_directory = Path(data_directory) if data_directory else state_directory()
         self.demo = demo
@@ -540,6 +1014,8 @@ class BackupApp:
         self.latest_progress = None
         self.cancel_event = threading.Event()
         self.worker = None
+        self.prune_window = None
+        self.retention_prompt_pending = False
         self.sort_column = "relative"
         self.sort_reverse = False
         self.column_widths = {}
@@ -553,10 +1029,7 @@ class BackupApp:
         self.heading_var = UiTextVar()
         self.subtitle_var = UiTextVar()
         self.root.title(f"{APP_NAME}{T(' • Failų kopijos')}")
-        width = min(1440, max(1100, root.winfo_screenwidth() - 80))
-        height = min(980, max(760, root.winfo_screenheight() - 80))
-        self.root.geometry(f"{width}x{height}")
-        self.root.minsize(1100, 760)
+        fit_window(self.root, 1440, 980, 1100, 760)
         self.root.configure(bg=BG)
         self.root.option_add("*Font", (FONT, 10))
         self.root.option_add("*Menu.background", WHITE)
@@ -570,6 +1043,7 @@ class BackupApp:
         self.destination_var.trace_add("write", lambda *args: self.invalidate("Kopijos aplankas pakeistas. Patikrinkite skirtumus."))
         self.search_var.trace_add("write", lambda *args: self.render_rows())
         self.filter_var.trace_add("write", lambda *args: self.render_rows())
+        self.filter_var.trace_add("write", lambda *args: self.refresh_filter_indicator())
         self.filter_var.trace_add("write", lambda *args: self.filter_display_var.set(T(self.filter_var.get())))
         self.filter_display_var.trace_add("write", lambda *args: self.filter_changed())
         self.overwrite_var.trace_add("write", lambda *args: self.restore_mode_changed())
@@ -600,7 +1074,7 @@ class BackupApp:
                   arrowcolor=[("disabled", DISABLED_FG), ("pressed", TEAL), ("active", TEAL)],
                   background=[("disabled", DISABLED_BG), ("active", HOVER_BG)])
         style.configure("Treeview", font=(FONT, 10), background=WHITE, fieldbackground=WHITE,
-                        foreground=INK, borderwidth=0, rowheight=38)
+                        foreground=INK, borderwidth=0, rowheight=self.row_height)
         style.configure("Treeview.Heading", font=(FONT, 9, "bold"), background=HEADING_BG, foreground=MUTED,
                         relief="flat", padding=(10, 11))
         style.map("Treeview", background=[("selected", SELECT_BG)], foreground=[("selected", INK)])
@@ -622,7 +1096,7 @@ class BackupApp:
                       arrowcolor=[("active", INK)])
 
     def build_shell(self):
-        sidebar = tk.Frame(self.root, bg=NAV, width=212)
+        sidebar = tk.Frame(self.root, bg=NAV, width=S(212))
         sidebar.pack(side="left", fill="y")
         sidebar.pack_propagate(False)
         brand = tk.Frame(sidebar, bg=NAV)
@@ -701,6 +1175,22 @@ class BackupApp:
         self.apply_density()
         self.schedule_density()
 
+    def toggle_stat_filter(self, value):
+        """A statistic card filters the list; clicking the active card again shows all differences."""
+        self.filter_var.set("Visi skirtumai" if self.filter_var.get() == value else value)
+
+    def refresh_filter_indicator(self):
+        if self.page not in MODE_LABELS or not hasattr(self, "show_all_button") or not self.show_all_button.winfo_exists():
+            return
+        current = self.filter_var.get()
+        for stat_card, color, filter_text in getattr(self, "stat_cards", {}).values():
+            if stat_card.winfo_exists():
+                stat_card.configure(highlightbackground=color if current == filter_text else LINE)
+        if current == "Visi skirtumai":
+            self.show_all_button.pack_forget()
+        elif not self.show_all_button.winfo_ismapped():
+            self.show_all_button.pack(side="right", padx=(0, 8), after=self.filter_combo)
+
     def filter_changed(self):
         display = self.filter_display_var.get()
         for key in ("Visi skirtumai", "Nauji šaltinyje", "Pakeisti", "Tik kopijoje",
@@ -711,6 +1201,8 @@ class BackupApp:
 
     def build_workspace(self):
         self.workspace_controls = []
+        self.density_buttons = []
+        self.density_titles = []
         panel = card(self.content)
         panel.pack(fill="x", pady=(0, 8))
         paths = tk.Frame(panel, bg=WHITE)
@@ -721,7 +1213,9 @@ class BackupApp:
                                        (2, "ATSARGINĖ KOPIJA", self.destination_var)):
             cell = tk.Frame(paths, bg=WHITE)
             cell.grid(row=0, column=index, sticky="ew")
-            label(cell, title, size=9, color=MUTED, bold=True).pack(anchor="w", pady=(0, 7))
+            title_label = label(cell, title, size=9, color=MUTED, bold=True)
+            title_label.pack(anchor="w", pady=(0, 7))
+            self.density_titles.append(title_label)
             field = tk.Frame(cell, bg=WHITE)
             field.pack(fill="x")
             entry = ttk.Entry(field, textvariable=variable, font=(FONT, 10))
@@ -729,6 +1223,7 @@ class BackupApp:
             browse = button(field, "…", lambda var=variable: self.browse_root(var))
             browse.pack(side="left", padx=(6, 0))
             self.workspace_controls.extend([entry, browse])
+            self.density_buttons.append(browse)
         label(paths, "←" if self.mode == "restore" else "→", size=21, color=TEAL).grid(row=0, column=1, padx=14, pady=(20, 0))
         tk.Frame(panel, bg=LINE, height=1).pack(fill="x", padx=18, pady=(3, 4))
         bottom = tk.Frame(panel, bg=WHITE)
@@ -739,12 +1234,14 @@ class BackupApp:
         edit = button(bottom, "Tvarkyti išimtis", self.open_exclusions)
         edit.pack(side="left", padx=(12, 0))
         self.workspace_controls.append(edit)
+        self.density_buttons.append(edit)
         self.scan_button = button(bottom, "Tikrinti skirtumus", self.start_scan, primary=True)
         self.scan_button.pack(side="right")
         self.workspace_controls.append(self.scan_button)
         self.full_scan_button = button(bottom, "Pilna patikra", lambda: self.start_scan(full=True))
         self.full_scan_button.pack(side="right", padx=(0, 8))
         self.workspace_controls.append(self.full_scan_button)
+        self.density_buttons.extend([self.scan_button, self.full_scan_button])
         # Equal-height context row in every mode. Restore/cleanup no longer
         # take an extra panel's worth of vertical space away from the list.
         options = self.mode_options = tk.Frame(panel, bg=WHITE,
@@ -766,6 +1263,8 @@ class BackupApp:
         stats.pack(fill="x", pady=(0, 8))
         self.stat_values = {}
         self.stat_captions = {}
+        self.stat_titles = {}
+        self.stat_cards = {}
         for index, (key, title, color, filter_text) in enumerate([
             ("source_only", "NAUJI ŠALTINYJE", TEAL, "Nauji šaltinyje"),
             ("modified", "PAKEISTI", AMBER, "Pakeisti"),
@@ -774,16 +1273,19 @@ class BackupApp:
         ]):
             stats.columnconfigure(index, weight=1, uniform="stats")
             stat_card = card(stats)
+            stat_card.configure(highlightthickness=2)  # Constant width: only the colour marks the active filter.
             stat_card.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 6, 0 if index == 3 else 6))
             value = label(stat_card, "—", size=24, bold=True, color=color)
             value.pack(anchor="w", padx=15, pady=(10, 0))
             caption = label(stat_card, title, size=8, color=MUTED, bold=True)
             caption.pack(anchor="w", padx=15, pady=(0, 12))
             for widget in (stat_card, value, caption):
-                widget.bind("<Button-1>", lambda event, val=filter_text: self.filter_var.set(val))
+                widget.bind("<Button-1>", lambda event, val=filter_text: self.toggle_stat_filter(val))
                 widget.configure(cursor="hand2")
             self.stat_values[key] = value
             self.stat_captions[key] = caption
+            self.stat_titles[key] = title
+            self.stat_cards[key] = (stat_card, color, filter_text)
         # Pack the action footer first to preserve it when the window is resized.
         footer = card(self.content)
         footer.pack(side="bottom", fill="x", pady=(8, 0))
@@ -800,6 +1302,7 @@ class BackupApp:
         self.execute_button.pack(side="right")
         self.cancel_button = button(footer_top, "Stabdyti", self.cancel_work)
         self.cancel_button.pack(side="right", padx=(0, 8))
+        self.density_buttons.extend([self.execute_button, self.cancel_button])
         self.cancel_button.configure(state="disabled")
         self.status_label = label(footer, textvariable=self.status_var, color=MUTED, size=9, anchor="w")
         self.status_label.pack(fill="x", padx=16, pady=(0, 12))
@@ -816,6 +1319,9 @@ class BackupApp:
                                         values=[T(key) for key in ("Visi skirtumai", "Nauji šaltinyje", "Pakeisti",
                                                               "Tik kopijoje", "Vienodi", "Konfliktai", "Skaitymo problemos", "Pažymėti", "Visi elementai")])
         self.filter_combo.pack(side="right")
+        self.show_all_button = button(tools, "✕ Rodyti visus skirtumus", lambda: self.filter_var.set("Visi skirtumai"))
+        self.show_all_button.configure(pady=3, padx=8, font=(FONT, 9))
+        self.refresh_filter_indicator()
         selection_tools = tk.Frame(table_card, bg=WHITE)
         selection_tools.pack(fill="x", padx=14, pady=(0, 7))
         self.select_all_button = button(selection_tools, "Pažymėti rodomus", self.select_visible)
@@ -862,13 +1368,14 @@ class BackupApp:
                                  show="tree headings", style="Files.Treeview", selectmode="browse", height=6)
         self.tree.column("#0", width=72, minwidth=72, stretch=False)
         self.tree.heading("#0", text="✓", anchor="w", command=self.select_visible)
-        definitions = [("check", "✓", 36, "center"), ("relative", "FAILAS / APLANKAS", 295, "w"),
-                       ("status", "BŪSENA", 145, "w"), ("source", "ŠALTINIS", 113, "e"),
-                       ("destination", "KOPIJA", 113, "e"), ("action", "PAŽYMĖJUS", 170, "w")]
+        definitions = [("check", "✓", 36, "center"), ("relative", "FAILAS / APLANKAS", S(295), "w"),
+                       ("status", "BŪSENA", S(145), "w"), ("source", "ŠALTINIS", S(113), "e"),
+                       ("destination", "KOPIJA", S(113), "e"), ("action", "PAŽYMĖJUS", S(170), "w")]
         for key, title, width, anchor in definitions:
             self.tree.heading(key, text=T(title), anchor=anchor,
                               command=lambda col=key: self.select_visible() if col == "check" else self.sort_rows(col))
-            minimum = {"check": 36, "relative": 210, "status": 95, "source": 72, "destination": 72, "action": 100}[key]
+            minimum = {"check": 36, "relative": S(210), "status": S(95), "source": S(72), "destination": S(72),
+                       "action": S(100)}[key]
             self.tree.column(key, width=width, minwidth=minimum, anchor=anchor, stretch=False)
         self.tree.grid(row=0, column=0, sticky="nsew")
         scroll = ttk.Scrollbar(holder, orient="vertical", command=self.tree.yview)
@@ -903,13 +1410,13 @@ class BackupApp:
 
     def check_density(self):
         self.density_id = None
-        compact = self.root.winfo_height() < 880
+        compact = self.root.winfo_height() < S(880)
         if self.page in MODE_LABELS and self.tree.winfo_exists() and self.tree.winfo_height() > 1:
             # Use the actual table allocation as well as the window height (DPI,
             # translated text and footer wrapping all affect the available space).
             heading = tkfont.Font(family=FONT, size=9, weight="bold").metrics("linespace") + 24
-            target = heading + 5 * 38
-            threshold = target + (120 if self.compact else 0)
+            target = heading + 5 * getattr(self, "row_height", S(38))
+            threshold = target + (S(120) if self.compact else 0)
             compact = compact or self.tree.winfo_height() < threshold
         if compact != self.compact:
             self.compact = compact
@@ -918,9 +1425,16 @@ class BackupApp:
     def apply_density(self):
         """Keep the file table usable on laptop screens with limited height."""
         workspace = self.page in MODE_LABELS
-        self.main.pack_configure(pady=12 if self.compact or workspace else 24)
-        self.header.pack_configure(pady=(0, 10 if workspace else 18))
-        self.heading_label.configure(font=(FONT, 21 if self.compact else 25, "bold"))
+        self.main.pack_configure(pady=6 if self.compact else 12 if workspace else 24)
+        self.header.pack_configure(pady=(0, 6 if self.compact else 10 if workspace else 18))
+        self.heading_label.configure(font=(FONT, 18 if self.compact else 25, "bold"))
+        # Compact mode: slimmer buttons and labels so the file list keeps at least five rows.
+        for widget in getattr(self, "density_buttons", ()):
+            if widget.winfo_exists():
+                widget.configure(pady=4 if self.compact else 9)
+        for widget in getattr(self, "density_titles", ()):
+            if widget.winfo_exists():
+                widget.pack_configure(pady=(0, 3 if self.compact else 7))
         if self.compact or workspace:
             self.subtitle_label.pack_forget()
         else:
@@ -972,6 +1486,25 @@ class BackupApp:
         if chosen:
             variable.set(chosen)
 
+    def open_prune(self, prompt=False):
+        if self.busy:
+            return
+        if self.prune_window is not None and self.prune_window.winfo_exists():
+            if not prompt:
+                self.prune_window.reveal()
+            return
+        try:
+            root = archive_root(self.current_settings())
+        except (BackupError, ValueError, OSError) as error:
+            if not prompt:
+                messagebox.showerror(T("Versijų archyvas"), T(str(error)), parent=self.root)
+            return
+        if root is None:
+            if not prompt:
+                messagebox.showinfo(T("Versijų archyvas"), T("Pasirinkus visą diską, nustatymuose nurodykite atskirą versijų aplanką už abiejų darbo diskų."), parent=self.root)
+            return
+        self.prune_window = PruneDialog(self, root, prompt=prompt)
+
     def open_exclusions(self):
         if not self.busy:
             self.exclusion_window = ExclusionsDialog(self)
@@ -994,6 +1527,10 @@ class BackupApp:
         for key, widget in self.stat_values.items():
             count = sum(row.status == key and row.kind == "file" for row in self.comparison.rows) if self.comparison else None
             widget.configure(text=str(count) if count is not None else "—")
+            # The large number counts files; folders (e.g. empty ones left for cleanup) are shown beside the title.
+            folders = sum(row.status == key and row.kind == "directory" for row in self.comparison.rows) if self.comparison else 0
+            caption = T(self.stat_titles[key]) + (f"  ·  {T('APLANKŲ')}: {folders}" if folders else "")
+            self.stat_captions[key].configure(text=caption)
 
     def render_rows(self):
         if self.page not in MODE_LABELS or not hasattr(self, "tree") or not self.tree.winfo_exists():
@@ -1344,6 +1881,7 @@ class BackupApp:
                     self.status_label.configure(fg=AMBER if value.cache_warning else TEAL)
             elif kind == "completed":
                 self.last_report = value
+                self.retention_prompt_pending = self.settings.prune_prompt and rules_enabled(self.settings)
                 summary = (f"Atlikta: {value['completed']}  ·  Klaidų: {value['failed']}  ·  Praleista: {value['skipped']}"
                            f"  ·  Dėl skaitymo klaidų: {value.get('scan_skipped', 0)}"
                            f"  ·  Sustabdyta: {value['cancelled']}. Išsamiau – veiksmų istorijoje.")
@@ -1359,13 +1897,16 @@ class BackupApp:
                 self.status_label.configure(fg=RED if kind == "error" else MUTED)
                 if kind == "error":
                     messagebox.showerror(T("Veiksmas neatliktas"), T(value), parent=self.root)
+        if self.retention_prompt_pending and not self.busy:
+            # Offer (never perform) archive cleanup after the follow-up scan has finished.
+            self.retention_prompt_pending = False
+            self.open_prune(prompt=True)
         self.poll_id = self.root.after(75, self.poll_events)
 
     def show_errors(self, errors):
         dialog = tk.Toplevel(self.root)
         dialog.title(T("Patikrinkite šias problemas"))
-        dialog.geometry("800x390")
-        dialog.minsize(600, 320)
+        fit_window(dialog, 800, 390, 600, 320)
         dialog.configure(bg=BG)
         dialog.transient(self.root)
         label(dialog, "Problemos, kurioms reikia dėmesio", size=17, bold=True).pack(anchor="w", padx=22, pady=20)
@@ -1465,6 +2006,31 @@ class BackupApp:
         button(folder_line, "Pasirinkti…", choose).pack(side="left", padx=(10, 0))
         label(body, "Tuščia reikšmė: aplankas šalia kopijos, pvz., Copy.versions. Archyvas turi būti už abiejų darbo aplankų.",
               color=MUTED, size=9, wraplength=760, justify="left").pack(anchor="w", pady=(8, 0))
+        label(body, "SENŲ VERSIJŲ SAUGOJIMAS", size=9, color=MUTED, bold=True).pack(anchor="w", pady=(22, 7))
+        retention = tk.Frame(body, bg=WHITE)
+        retention.pack(fill="x")
+        self.keep_runs_var = tk.StringVar(value=str(self.settings.keep_runs))
+        self.keep_days_var = tk.StringVar(value=str(self.settings.keep_days))
+        self.max_versions_var = tk.StringVar(value=str(self.settings.max_versions_gb))
+        for index, (title, variable, maximum, unit) in enumerate((
+            ("Visada palikti paskutines operacijas", self.keep_runs_var, 1000, ""),
+            ("Laikyti ne senesnes nei", self.keep_days_var, 3650, "d."),
+            ("Didžiausias archyvo dydis", self.max_versions_var, 10000, "GB"),
+        )):
+            label(retention, title, bold=True).grid(row=index, column=0, sticky="w", pady=6)
+            ttk.Spinbox(retention, from_=0, to=maximum, textvariable=variable, width=6).grid(row=index, column=1, padx=(20, 6))
+            label(retention, unit).grid(row=index, column=2, sticky="w")
+            label(retention, "0 = neribota", color=MUTED, size=9).grid(row=index, column=3, sticky="w", padx=(14, 0))
+        self.prune_prompt_var = tk.BooleanVar(value=self.settings.prune_prompt)
+        tk.Checkbutton(body, text=T("Pasiūlyti išvalyti po operacijos"), variable=self.prune_prompt_var,
+                       bg=WHITE, fg=INK, activebackground=WHITE, activeforeground=INK,
+                       selectcolor=WHITE, font=(FONT, 11), anchor="w", highlightthickness=0).pack(anchor="w", pady=(12, 5))
+        label(body, "Paskutinės nurodyto skaičiaus operacijos niekada netrinamos. Senesnės trinamos, jei viršija "
+              "dienų arba dydžio ribą; jei šių ribų nenustatėte – trinamos visos senesnės. "
+              "Programa niekada netrina versijų pati: jei archyvas viršija ribas, po operacijos parodoma peržiūra – "
+              "trinama tik jums patvirtinus. Rankiniu būdu: Veiksmų istorija → „Tvarkyti versijas…“. "
+              "Nebaigtos operacijos niekada netrinamos.",
+              color=MUTED, size=9, wraplength=760, justify="left").pack(anchor="w", padx=3)
         tk.Frame(body, bg=LINE, height=1).pack(fill="x", pady=24)
         label(body, "Kopijavimo elgsena", size=17, bold=True).pack(anchor="w", pady=(0, 14))
         grid = tk.Frame(body, bg=WHITE)
@@ -1518,6 +2084,8 @@ class BackupApp:
         try:
             updated = replace(self.current_settings(), workers=int(self.workers_var.get()), retries=int(self.retries_var.get()),
                               keep_versions=self.keep_versions_var.get(), versions_directory=self.versions_var.get().strip(),
+                              keep_runs=int(self.keep_runs_var.get() or 0), keep_days=int(self.keep_days_var.get() or 0),
+                              max_versions_gb=int(self.max_versions_var.get() or 0), prune_prompt=self.prune_prompt_var.get(),
                               language=self.language_var.get(), theme=self.theme_var.get()).validate()
             save_settings(updated, self.data_directory)
             appearance_changed = (updated.language, updated.theme) != (self.settings.language, self.settings.theme)
@@ -1568,7 +2136,7 @@ class BackupApp:
             try:
                 report = json.loads(file.read_text(encoding="utf-8"))
                 item = self.history_tree.insert("", "end", values=(report["started"].replace("T", " "),
-                    T(MODE_LABELS.get(report["mode"], report["mode"])), report["completed"], report["failed"],
+                    T(HISTORY_LABELS.get(report["mode"], report["mode"])), report["completed"], report["failed"],
                     T({"completed": "Baigta", "completed_with_skips": "Baigta su praleidimais", "errors": "Yra klaidų", "cancelled": "Sustabdyta", "running": "Nebaigta / vykdoma"}.get(report["state"], report["state"]))))
                 self.history_reports[item] = (report, file)
             except (OSError, ValueError, KeyError, TypeError) as error:
@@ -1582,8 +2150,10 @@ class BackupApp:
         self.history_detail.insert("1.0", T(empty_text))
         self.history_detail.configure(state="disabled")
         controls = tk.Frame(self.content, bg=BG)
-        controls.pack(fill="x", pady=(16, 0))
+        # Reserve the button row first: on scaled displays the detail text would otherwise push it out of view.
+        controls.pack(side="bottom", fill="x", pady=(16, 0), before=panel)
         button(controls, "Atverti operacijos versijas", self.open_history_archive, primary=True).pack(side="left")
+        button(controls, "Tvarkyti versijas…", lambda: self.open_prune()).pack(side="left", padx=(10, 0))
         button(controls, "Eksportuoti žurnalą", self.export_history).pack(side="left", padx=10)
         button(controls, "Žurnalų aplankas", lambda: self.open_path(logs)).pack(side="left")
 
@@ -1596,9 +2166,12 @@ class BackupApp:
         if not selected:
             return
         report, file = selected
-        content = [f"{T('Šaltinis: ')}{report['source']}", f"{T('Kopija: ')}{report['destination']}",
-                   f"{T('Versijų aplankas: ')}{report.get('archive') or T('Šiai operacijai versijų nebuvo')}", "",
-                   T(f"Atlikta: {report['completed']} | Klaidų: {report['failed']} | Praleista: {report['skipped']} | Sustabdyta: {report['cancelled']}"), ""]
+        if report.get("mode") == "prune":
+            content = [f"{T('Versijų aplankas: ')}{report.get('archive', '')}", ""]
+        else:
+            content = [f"{T('Šaltinis: ')}{report['source']}", f"{T('Kopija: ')}{report['destination']}",
+                       f"{T('Versijų aplankas: ')}{report.get('archive') or T('Šiai operacijai versijų nebuvo')}", ""]
+        content += [T(f"Atlikta: {report['completed']} | Klaidų: {report['failed']} | Praleista: {report['skipped']} | Sustabdyta: {report['cancelled']}"), ""]
         states = {"completed": "ATLIKTA", "failed": "KLAIDA", "skipped": "PRALEISTA", "cancelled": "SUSTABDYTA"}
         for item in report.get("items", []):
             content.append(f"{T(states.get(item['status'], item['status']))}  {item['path']}" + (f"\n    {T(item['message'])}" if item.get("message") else ""))
@@ -1639,6 +2212,12 @@ class BackupApp:
             if messagebox.askyesno(T("Vyksta operacija"), T("Sustabdyti vykdomą operaciją?\nLangas liks atidarytas, kol bus saugiai baigta stabdyti."), parent=self.root):
                 self.cancel_work()
             return
+        if self.prune_window is not None and self.prune_window.winfo_exists():
+            if self.prune_window.busy():
+                self.prune_window.reveal()
+                self.prune_window.request_close()
+                return
+            self.prune_window.destroy_dialog()
         self.persist_settings()
         self.root.after_cancel(self.poll_id)
         if self.density_id is not None:

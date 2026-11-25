@@ -1,10 +1,38 @@
-# BackUp Studio 2.6.0
+# BackUp Studio 2.7.0
 
 Darbalaukio programa failų kopijavimui, palyginimui, atkūrimui ir kopijos valymui.
 Sukurta pateiktos Python programos pagrindu, su lietuviška ir angliška grafine sąsaja ir
 peržiūrėta failų operacijų logika.
 
-## Kas pasikeitė 2.6.0
+## Kas pasikeitė 2.7.0
+
+- Kopijos valymas pašalina ir tuščius OneDrive katalogus. OneDrive maždaug po
+  20 sekundžių nuo sinchronizavimo pažymi katalogą „Read-only“, o Windows tokio
+  katalogo netrina („Access is denied“). Dabar, dar kartą patikrinus katalogą,
+  nuimamas tik šis atributas ir katalogas pašalinamas; nepavykus atributas
+  grąžinamas. Šalinami tik tušti katalogai, ACL teisės nekeičiamos.
+- Senų versijų valymas: Veiksmų istorija → „Tvarkyti versijas…“. Nustatymuose
+  nurodoma, kiek paskutinių operacijų visada palikti ir kiek dienų / GB saugoti.
+  Paskutinės nurodyto skaičiaus operacijos niekada netrinamos; senesnės trinamos
+  viršijus dienų ar dydžio ribą, o jei šių ribų nėra – visos senesnės.
+  Trinamos tik visos programos sukurtos operacijos; naujausia, nebaigta,
+  nuorodų turinti ar po peržiūros pasikeitusi operacija paliekama.
+- Valymo lange matomas operacijos aplankas, pradžios ir pabaigos laikas bei
+  failų sąrašas su horizontaliu slinkimu; „Atverti aplanką“ jį atidaro.
+  Kopijos valymo archyvams pagal turinį tikrinama, ar failai dar yra šaltinyje
+  arba kopijoje: rodoma „Tik archyve“ arba identiško failo vieta. Trinama tik
+  patvirtinus, rezultatas įrašomas į veiksmų istoriją.
+- Pasirinkus „Pasiūlyti išvalyti po operacijos“, viršijus ribas po operacijos
+  parodoma ta pati peržiūra. Programa versijų pati netrina.
+- Lango, eilučių, šoninės juostos, stulpelių ir dialogų dydžiai skaičiuojami
+  pagal Windows ekrano mastelį (125 %, 150 % ...), bet neviršija ekrano.
+  Kompaktiškame vaizde mygtukai ir paraštės siauresni: failų sąraše matomos
+  bent penkios eilutės. Veiksmų istorijos mygtukai visada matomi.
+- Statistikos kortelėse šalia failų nurodomas ir katalogų skaičius. Aktyvus
+  kortelės filtras paryškinamas; pakartotinis spustelėjimas arba
+  „✕ Rodyti visus skirtumus“ vėl rodo visą sąrašą.
+
+## Ankstesni 2.6.0 pakeitimai
 
 - „Tikrinti skirtumus“ pakartotinai naudoja atskirai šaltiniui ir kopijai išsaugotas
   SHA-256 sumas, jei nesikeitė failo tapatybė, dydis ir laiko žymos. Net kai
@@ -20,7 +48,7 @@ peržiūrėta failų operacijų logika.
 - Visose failų lentelėse žymimojo langelio ir tipo piktogramos turinys
   atitrauktas 12 pikselių nuo vidinio krašto; pati lentelė neperkelta.
 
-## Kas pasikeitė 2.5.0
+## Ankstesni 2.5.0 pakeitimai
 
 - Sinchronizavimas, atkūrimas ir kopijos valymas naudoja vienodą sąrašo išdėstymą.
   Atkūrimo pasirinkimai ir valymo paaiškinimas perkelti į aplankų skydelį;
@@ -114,7 +142,7 @@ katalogams pašalinti archyvo nereikia.
   Jei liko nearchyvuotų failų, istorija paaiškina, kodėl katalogas paliktas.
 
 Atnaujinimas: išskleiskite visą naują ZIP į atskirą aplanką. Paleidus sąsajos
-apačioje turi būti **2.6.0**. Esami nustatymai ir kopijos išlieka. Paketas naudoja
+apačioje turi būti **2.7.0**. Esami nustatymai ir kopijos išlieka. Paketas naudoja
 patikrintą ankstesnį EXE paleidiklį, todėl jo „Properties“ versija gali būti 2.2.0;
 tikrą programos versiją rodo pati sąsaja.
 
@@ -131,8 +159,8 @@ papildomo diegimo, administratoriaus teisių ar interneto paleidimui nereikia.
 `_internal` aplankas turi likti šalia EXE – perkelkite visą programos aplanką
 arba sukurkite EXE nuorodą. Nustatymai saugomi kaip ir Python versijoje.
 
-EXE nėra pasirašytas leidėjo sertifikatu. Paketas sukompiliuotas ir statiškai
-patikrintas Linux aplinkoje; tikras paleidimas Windows dar nepatikrintas.
+EXE nėra pasirašytas leidėjo sertifikatu. Paketas sukompiliuotas Linux aplinkoje;
+2.7.0 versija naudota ir patikrinta Windows 11 kompiuteryje su OneDrive aplankais.
 Jei atsirastų paleidimo klaida, žiūrėkite `%LOCALAPPDATA%/BackUpStudio/startup.log`.
 Išsamesnė paketo informacija yra `SKAITYTI.txt`.
 
@@ -237,11 +265,10 @@ Sinchronizavimas ir valymas be pasiekiamo šaltinio blokuojami.
 
 ## Išimtys
 
-Pradinės išimtys perkeltos iš senosios konfigūracijos:
-`Investavimas` ir `Islaidos/Islaidos UK`.
+Pradžioje išimčių nėra; jas pridėkite mygtuku **Tvarkyti išimtis**.
 
 Išimtis apima konkretų santykinį aplanko kelią ir jo palikuonis. Pavyzdžiui,
-`Investavimas` nepraleidžia aplanko `Investavimas_kita`.
+`Asmeniniai` nepraleidžia aplanko `Asmeniniai_kita`.
 Išimtys taikomos abiejose pusėse ir visoms operacijoms. Jos nekeičia jau esančio
 neįtraukto turinio. Šablonai su `*` ar `?` nenaudojami.
 Pakeitus šaltinį išimtys lieka santykinės naujajam šaltiniui – peržiūrėkite jų sąrašą.
@@ -249,7 +276,7 @@ Pakeitus šaltinį išimtys lieka santykinės naujajam šaltiniui – peržiūr�
 ## Versijos ir valymas
 
 Pagal nutylėjimą prieš perrašant failą saugoma jo ankstesnė versija. Archyvas
-kuriamas **šalia kopijos**, pvz., `C:/D/BackUp/Copy.versions`, atskirai nuo
+kuriamas **šalia kopijos**, pvz., `D:/Kopija.versions`, atskirai nuo
 abiejų darbo aplankų. Nustatymuose galite pasirinkti kitą vietą.
 
 Kiekviena operacija turi atskirą datos ir unikalaus numerio aplanką:
@@ -278,7 +305,9 @@ Ankstesnę versiją galima pasiimti failų naršyklėje arba pasirinkti atitinka
 šaltinį atkūrimo režime. Pasirinkite patį turinio poaplankį, ne katalogą su
 `manifest.json`. Grąžinant įprastą darbą atstatykite ankstesnį kopijos kelią.
 
-Archyvo versijos šioje versijoje automatiškai nevalomos; jų vietą reikia prižiūrėti.
+Archyvo versijos pačios netrinamos. Senas operacijas galima peržiūrėti ir pašalinti:
+Veiksmų istorija → **Tvarkyti versijas…**. Ribos nustatomos skiltyje
+Nustatymai → Senų versijų saugojimas; peržiūrą galima gauti ir po operacijos.
 Žurnaluose esantys absoliutūs failų keliai matomi tam kompiuterio vartotojui.
 
 ## Patikimumas ir ribos
@@ -312,7 +341,7 @@ Archyvo versijos šioje versijoje automatiškai nevalomos; jų vietą reikia pri
 
 ## Failai ir nustatymai
 
-Šeši pagrindiniai moduliai pakeičia ankstesnę programos versiją kaip vienas
+Septyni pagrindiniai moduliai pakeičia ankstesnę programos versiją kaip vienas
 suderintas rinkinys. Nemaišykite senų ir naujų modulių.
 
 | Failas | Paskirtis |
@@ -320,6 +349,7 @@ suderintas rinkinys. Nemaišykite senų ir naujų modulių.
 | `main.py` | Paleidimas ir demonstracija. |
 | `ui.py` | Tkinter sąsaja ir foninių užduočių valdymas. |
 | `file_ops.py` | Nuskaitymas, palyginimas, kopijavimas, archyvavimas, atkūrimas. |
+| `retention.py` | Senų versijų archyvo peržiūra ir valymas. |
 | `config.py` | Nustatymų modelis ir atominis JSON įrašymas. |
 | `utils.py` | Keliai, išimtys, formatavimas, CSV eksportas. |
 | `i18n.py` | Lietuviški ir angliški sąsajos tekstai. |
@@ -338,17 +368,15 @@ Automatizuoti testai kuria ir pašalina tik savo laikinus bandomuosius failus:
 py -3 -m unittest discover -s tests -v
 ```
 
-Šiame leidime Linux aplinkoje praėjo 83 testai: 65 failų operacijų / kelių,
-8 kelių atvaizdavimo (įskaitant Tcl laukelius be grafinio ekrano), 6 stulpelių /
-išdėstymo valdymo ir 4 piktogramų / pažymėjimo testai be grafinio ekrano.
-Dar 18 Tkinter sąsajos testų šiame paleidime praleista: virtualaus ekrano
-paleidimą riboja aplinkos leidimai. Testai naudoja laikinus
+2.7.0 versija patikrinta Windows 11 kompiuteryje (Python 3.15, 125 % ekrano
+mastelis): iš 147 testų 144 praėjo, 3 praleisti: du simbolinėms nuorodoms kurti reikia
+administratoriaus teisių, vienas skirtas ne Windows sistemai. Testai naudoja laikinus
 failus. Failų operacijų testai apima palyginimą, išimtis, abu atkūrimo režimus, pasirinktų
 failų vykdymą, saugų valymą, versijas, klaidas, disko vietą, pasikeitusį turinį ir
 stabdymą. GUI testams reikia grafinės aplinkos ir tkinter; be jos jie praleidžiami.
 Įtraukti katalogų šalinimo pakartojimų, per pauzę pasikeitusių aplankų ir naujų
 failų apsaugos, neaktyvių mygtukų kontrasto bei būsenų persijungimo testai.
 GUI patikros papildytos trijų skilčių vienodo aukščio, piktogramų ir pelės
-paspaudimų abiejose lentelėse scenarijais. Šios grafinės patikros čia neatliktos.
-Ši versija patikrinta Linux aplinkoje; tikras Windows paleidimas ir Windows
-specifinės failų teisės šiame etape dar nepatikrinti.
+paspaudimų abiejose lentelėse scenarijais. 2.7.0 testai apima ir senų versijų valymą,
+„Read-only“ OneDrive katalogų šalinimą bei dydžių pritaikymą ekrano masteliui.
+Paruoštas EXE paketas naudotas kopijavimui, atkūrimui ir valymui su OneDrive aplankais.

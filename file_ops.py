@@ -494,6 +494,39 @@ def windows_attributes(path, value=None):
         raise ctypes.WinError(ctypes.get_last_error())
 
 
+def remove_empty_directory(path: Path, validate=None):
+    """Remove one empty folder; never recursive.
+
+    OneDrive marks synced folders read-only about 20 seconds after syncing them,
+    and Windows refuses to remove a read-only folder ("Access is denied"). In
+    that case only the read-only bit is cleared - after revalidating the folder -
+    and removal is tried once more. If the folder survives, the bit is restored.
+    Links/junctions never reach this point: callers validate the folder with
+    snapshot(), which rejects them.
+    """
+    try:
+        path.rmdir()
+        return
+    except PermissionError as error:
+        if os.name != "nt" or getattr(error, "winerror", None) != 5:
+            raise
+        attributes = windows_attributes(path)
+        if not attributes & 0x10 or not attributes & 1:  # only read-only directories
+            raise
+    if validate is not None:
+        validate()
+    windows_attributes(path, attributes & ~1)
+    try:
+        path.rmdir()
+    except BaseException:
+        try:
+            current = windows_attributes(path)
+            windows_attributes(path, current | 1)
+        except OSError:
+            pass  # The folder is gone or unreachable; nothing to restore.
+        raise
+
+
 def remove_archived_file(path, expected, validate, attempts, cancel):
     """Only call after a verified archive exists. Retry with revalidation."""
     current = expected
@@ -727,7 +760,7 @@ def execute(comparison: Comparison, selected: set[str], settings: Settings, over
                     try:
                         # Never recursively delete: even newly created or excluded
                         # children must keep the folder intact.
-                        target.rmdir()
+                        remove_empty_directory(target, lambda: assert_unchanged(target, row.destination))
                     except OSError as error:
                         if error.errno in (errno.ENOTEMPTY, errno.EEXIST) or getattr(error, "winerror", 0) == 145:
                             if next(target.iterdir(), None) is not None:

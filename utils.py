@@ -16,6 +16,8 @@ STATUS_LABELS = {
     "unreadable": "Neperskaityta / apsaugota",
 }
 MODE_LABELS = {"sync": "Sinchronizavimas", "restore": "Atkūrimas", "cleanup": "Kopijos valymas"}
+# History also lists archive cleanups; MODE_LABELS stays the set of workspace pages.
+HISTORY_LABELS = {**MODE_LABELS, "prune": "Senų versijų valymas"}
 
 
 def format_size(size: int | None) -> str:

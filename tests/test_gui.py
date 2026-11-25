@@ -43,6 +43,8 @@ class GuiFlowTests(unittest.TestCase):
             self.app.cancel_work()
             self.drain()
         self.window.after_cancel(self.app.poll_id)
+        if self.app.density_id is not None:
+            self.window.after_cancel(self.app.density_id)
         self.window.destroy()
         self.confirm.stop()
         self.info.stop()

@@ -42,7 +42,7 @@ def update(previous, output, tools_root=None, reuse_launcher=False):
         package = Path(temporary) / 'BackUpStudio'
         shutil.copytree(previous, package)
         app = package / '_internal/app'
-        for name in ('main.py', 'ui.py', 'config.py', 'utils.py', 'file_ops.py', 'i18n.py', 'path_utils.py', 'file_icons.py'):
+        for name in ('main.py', 'ui.py', 'config.py', 'utils.py', 'file_ops.py', 'i18n.py', 'path_utils.py', 'file_icons.py', 'retention.py'):
             shutil.copy2(SOURCE / name, app / name)
         shutil.copytree(SOURCE / 'tests', app / 'tests', dirs_exist_ok=True,
                         ignore=shutil.ignore_patterns('__pycache__'))

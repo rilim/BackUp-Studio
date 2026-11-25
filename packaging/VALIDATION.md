@@ -1,5 +1,23 @@
 # Windows x64 paketo patikros ataskaita
 
+## Versija 2.7.0 – 2026-11-25
+
+- Kopijos valymas pašalina tuščius OneDrive katalogus: OneDrive po sinchronizavimo
+  pažymi juos „Read-only“, o Windows tokio katalogo netrina („Access is denied“).
+  Patikrinus katalogą nuimamas tik šis atributas; nepavykus jis grąžinamas.
+  Su 2.6.0 kodu tas pats bandymas atkuria naudotojo gautą WinError 5.
+- Naujas retention.py: senų versijų peržiūra ir valymas. Paskutinės N operacijų
+  niekada netrinamos; senesnės – pagal dienų ar dydžio ribą. Trinamos tik visos
+  programos sukurtos operacijos, prieš tai pakartotinai patikrinus jų turinį.
+  Pakavimo scenarijai įtraukia retention.py.
+- Pikselių dydžiai skaičiuojami pagal Windows ekrano mastelį ir apriboti ekranu;
+  125 % mastelyje mažiausiame lange sąrašas rodo ~7 eilutes vietoj ~2.
+- Windows 11 (Python 3.15, 125 % mastelis): 147 testai – 144 praėjo, 3 praleisti
+  (simbolinėms nuorodoms reikia teisių; vienas testas skirtas ne Windows sistemai).
+  EXE paketas naudotas su OneDrive aplankais kopijavimui, atkūrimui ir valymui.
+- Viešoje kopijoje pradiniai aplankai ir išimtys tušti; demonstracija naudoja
+  neutralų pavyzdinį aplanką „Asmeniniai“.
+
 ## Versija 2.6.0 – 2026-10-21
 
 - Kontrolinių sumų indeksas atskiria šaltinio ir kopijos kelius, tikrina failo
